@@ -7,6 +7,7 @@ from smallsurv.calibration import (
 )
 from smallsurv.diagnostics import DiagnosticReport, audit_data, riley_min_sample_size
 from smallsurv.firth import FirthLogisticRegression
+from smallsurv.simulation import SimulationResult, run_monte_carlo
 from smallsurv.validation import (
     ValidationReport,
     bootstrap_optimism_validate,
@@ -19,6 +20,7 @@ __all__ = [
     "CalibrationReport",
     "DiagnosticReport",
     "FirthLogisticRegression",
+    "SimulationResult",
     "ValidationReport",
     "audit_data",
     "bootstrap_optimism_validate",
@@ -26,4 +28,5 @@ __all__ = [
     "reliability_curve_data",
     "repeated_cv_validate",
     "riley_min_sample_size",
+    "run_monte_carlo",
 ]
