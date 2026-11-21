@@ -21,7 +21,7 @@ pip install git+[https://github.com/aazabir/smallsurv.git@v0.2.0](https://github
 For local development:
 
 ```bash
-git clone [https://github.com/aazabir/smallsurv.git](https://github.com/aazabir/smallsurv.git)
+git clone [https://github.com/aazabir/smallsurv.git]
 cd smallsurv
 pip install -e ".[dev]"
 ```
