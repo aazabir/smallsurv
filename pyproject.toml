@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smallsurv"
+version = "0.1.0"
+description = "Statistical guardrails and diagnostic modeling for small-sample binary survey data."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Abdullah Al Zabir", email = "zabir.sylau@gmail.com" }
+]
+keywords = [
+    "statistics",
+    "survey",
+    "logistic-regression",
+    "firth",
+    "small-sample",
+    "econometrics",
+    "calibration",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "statsmodels>=0.14",
+    "scikit-learn>=1.3",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+ml = [
+    "xgboost>=2.0",
+    "shap>=0.44",
+]
+io = [
+    "openpyxl>=3.1",
+]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.4",
+    "build>=1.0",
+    "twine>=5.0",
+]
+all = [
+    "smallsurv[ml,io]",
+]
+
+[project.urls]
+Homepage = "https://github.com/aazabir/smallsurv"
+Repository = "https://github.com/aazabir/smallsurv"
+Issues = "https://github.com/aazabir/smallsurv/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
