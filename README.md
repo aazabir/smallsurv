@@ -15,13 +15,13 @@ Statistical guardrails, Firth penalized logistic regression with FLIC intercept 
 Install `v0.2.0` directly from GitHub:
 
 ```bash
-pip install git+[https://github.com/aazabir/smallsurv.git@v0.2.0]
+pip install git+https://github.com/aazabir/smallsurv.git@v0.2.0
 ```
 
 For local development:
 
 ```bash
-git clone [https://github.com/aazabir/smallsurv.git]
+git clone https://github.com/aazabir/smallsurv.git
 cd smallsurv
 pip install -e ".[dev]"
 ```
