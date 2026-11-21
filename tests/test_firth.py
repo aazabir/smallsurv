@@ -68,6 +68,32 @@ def test_firth_summary_table_and_dataframe_input():
     assert len(model.predict(df)) == n
 
 
+def test_firth_sample_weight_support():
+    rng = np.random.default_rng(21)
+    n = 75
+    X = rng.normal(size=(n, 2))
+    logits = -0.7 + 0.8 * X[:, 0] - 0.4 * X[:, 1]
+    y = rng.binomial(1, 1.0 / (1.0 + np.exp(-logits)))
+    weights = rng.uniform(0.5, 2.5, size=n)
+
+    model = FirthLogisticRegression(flic=True).fit(X, y, sample_weight=weights)
+    probs = model.predict_proba(X)[:, 1]
+
+    weighted_mean_pred = np.average(probs, weights=weights)
+    weighted_obs_rate = np.average(y, weights=weights)
+
+    assert model.converged_ is True
+    assert np.isclose(weighted_mean_pred, weighted_obs_rate, atol=1e-6)
+
+    with pytest.raises(ValueError, match="sample_weight"):
+        model.fit(X, y, sample_weight=np.ones(n - 1))
+
+    with pytest.raises(ValueError, match="non-negative"):
+        w_neg = weights.copy()
+        w_neg[0] = -0.1
+        model.fit(X, y, sample_weight=w_neg)
+
+
 def test_firth_validation_errors():
     model = FirthLogisticRegression()
     with pytest.raises(ValueError, match="not fitted"):

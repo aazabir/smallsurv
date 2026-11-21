@@ -1,6 +1,9 @@
-"""Firth penalized logistic regression with FLIC intercept correction."""
+"""Firth penalized logistic regression with optional FLIC intercept correction."""
 
 from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -8,247 +11,366 @@ from scipy import optimize, special, stats
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 
-class FirthLogisticRegression(BaseEstimator, ClassifierMixin):
-    """Firth's bias-reduced logistic regression with optional FLIC correction.
+def _sigmoid(z: np.ndarray) -> np.ndarray:
+    """Numerically stable logistic sigmoid function."""
+    return special.expit(np.clip(z, -500.0, 500.0))
 
-    Implements Jeffreys-invariant prior penalization (Firth, 1993) to eliminate
-    first-order bias and resolve complete or quasi-complete separation in
-    small-sample binary survey data. When ``flic=True`` (default), applies
-    Firth's Logistic regression with Intercept Correction (Puhr et al., 2017)
-    so that the average predicted probability matches the observed event rate.
+
+@dataclass
+class _FirthFitResult:
+    intercept: float
+    coef: np.ndarray
+    cov_params: np.ndarray
+    converged: bool
+    n_iter: int
+
+
+def _fit_firth_mle(
+    X: np.ndarray,
+    y: np.ndarray,
+    sample_weight: np.ndarray,
+    max_iter: int = 200,
+    tol: float = 1e-7,
+) -> _FirthFitResult:
+    """Fit weighted Firth penalized logistic regression using Newton-Raphson / Fisher scoring.
+
+    Maximizes penalized log-likelihood:
+        l*(beta) = l(beta) + 0.5 * log(det(I(beta)))
+    where l(beta) is the weighted Bernoulli log-likelihood and I(beta) is the
+    weighted Fisher information matrix.
+    """
+    n_samples, n_features = X.shape
+    design = np.column_stack([np.ones(n_samples, dtype=float), X])
+    n_params = n_features + 1
+    w = np.asarray(sample_weight, dtype=float).ravel()
+
+    # Mild ridge initialization helps in extreme separation before Jeffreys penalty stabilizes
+    beta = np.zeros(n_params, dtype=float)
+    converged = False
+    n_iter = 0
+
+    for it in range(1, max_iter + 1):
+        n_iter = it
+        eta = np.clip(design @ beta, -50.0, 50.0)
+        pi = _sigmoid(eta)
+        wt = np.clip(w * pi * (1.0 - pi), 1e-12, None)
+
+        # Weighted Fisher information matrix: X^T W X
+        WX = design * wt[:, None]
+        fisher = design.T @ WX + 1e-10 * np.eye(n_params)
+
+        # Hat matrix diagonal h_i = w_i * x_i^T I^{-1} x_i
+        # Solve fisher @ V_part = design.T -> h = sum(design * (fisher^{-1} design^T)^T, axis=1) * wt
+        inv_fisher_XT = np.linalg.solve(fisher, design.T)
+        hat_diag = np.sum(design * inv_fisher_XT.T, axis=1) * wt
+        hat_diag = np.clip(hat_diag, 0.0, 0.999999)
+
+        # Firth modified score: U*(beta)_j = sum_i w_i * (y_i - pi_i + h_i * (0.5 - pi_i)) * x_{ij}
+        adj_resid = w * (y - pi) + hat_diag * (0.5 - pi)
+        score = design.T @ adj_resid
+
+        step_norm = float(np.max(np.abs(score)))
+        if step_norm < tol and it > 1:
+            converged = True
+            break
+
+        # Damped Newton / Fisher scoring step
+        try:
+            delta = np.linalg.solve(fisher, score)
+        except np.linalg.LinAlgError:
+            delta, _, _, _ = np.linalg.lstsq(fisher, score, rcond=None)
+
+        # Step-halving line search on penalized log-likelihood
+        def pen_loglik(b_vec: np.ndarray) -> float:
+            e = np.clip(design @ b_vec, -50.0, 50.0)
+            p = _sigmoid(e)
+            ll = float(np.sum(w * (y * np.log(np.clip(p, 1e-15, 1.0)) + (1.0 - y) * np.log(np.clip(1.0 - p, 1e-15, 1.0)))))
+            w_p = np.clip(w * p * (1.0 - p), 1e-12, None)
+            info = design.T @ (design * w_p[:, None]) + 1e-10 * np.eye(n_params)
+            sign, logdet = np.linalg.slogdet(info)
+            penalty = 0.5 * float(logdet) if sign > 0 else -1e6
+            return ll + penalty
+
+        curr_obj = pen_loglik(beta)
+        step = 1.0
+        accepted = False
+        for _ in range(25):
+            cand = beta + step * delta
+            if np.max(np.abs(cand)) > 50.0:
+                step *= 0.5
+                continue
+            if pen_loglik(cand) >= curr_obj - 1e-12:
+                beta = cand
+                accepted = True
+                break
+            step *= 0.5
+
+        if not accepted:
+            beta = beta + 0.1 * delta
+
+        if float(np.linalg.norm(step * delta)) < tol:
+            converged = True
+            break
+
+    eta_final = np.clip(design @ beta, -50.0, 50.0)
+    pi_final = _sigmoid(eta_final)
+    wt_final = np.clip(w * pi_final * (1.0 - pi_final), 1e-12, None)
+    fisher_final = design.T @ (design * wt_final[:, None]) + 1e-10 * np.eye(n_params)
+    try:
+        cov_params = np.linalg.inv(fisher_final)
+    except np.linalg.LinAlgError:
+        cov_params = np.linalg.pinv(fisher_final)
+
+    return _FirthFitResult(
+        intercept=float(beta[0]),
+        coef=beta[1:].copy(),
+        cov_params=cov_params,
+        converged=converged or n_iter < max_iter,
+        n_iter=n_iter,
+    )
+
+
+def _apply_flic_intercept(
+    X: np.ndarray,
+    y: np.ndarray,
+    coef: np.ndarray,
+    sample_weight: np.ndarray,
+) -> float:
+    """Firth's Logistic Regression with Intercept Correction (Puhr et al., 2017).
+
+    Keeps slope estimates `coef` fixed and solves for intercept `alpha0` such that
+    the weighted mean predicted probability equals the weighted observed event rate:
+        sum_i w_i * sigmoid(alpha0 + x_i^T beta) = sum_i w_i * y_i
+    """
+    if X.shape[1] == 0:
+        linear_pred = np.zeros(X.shape[0], dtype=float)
+    else:
+        linear_pred = X @ coef
+
+    w = np.asarray(sample_weight, dtype=float).ravel()
+    target_weighted_events = float(np.sum(w * y))
+
+    def score_fn(alpha0: float) -> float:
+        probs = _sigmoid(alpha0 + linear_pred)
+        return float(np.sum(w * probs) - target_weighted_events)
+
+    low, high = -10.0, 10.0
+    f_low, f_high = score_fn(low), score_fn(high)
+    for _ in range(30):
+        if f_low <= 0.0 <= f_high or f_high <= 0.0 <= f_low:
+            break
+        low *= 2.0
+        high *= 2.0
+        f_low, f_high = score_fn(low), score_fn(high)
+
+    try:
+        root = optimize.brentq(score_fn, low, high, xtol=1e-10, maxiter=200)
+        return float(root)
+    except ValueError:
+        res = optimize.minimize_scalar(lambda a: score_fn(float(a)) ** 2, method="bounded", bounds=(low, high))
+        return float(res.x)
+
+
+class FirthLogisticRegression(BaseEstimator, ClassifierMixin):
+    """Firth penalized logistic regression with optional FLIC intercept correction.
 
     Parameters
     ----------
     flic : bool, default=True
-        If True, refit the intercept via unpenalized maximum likelihood with
-        the Firth linear predictor held fixed as an offset (calibration-in-the-large).
-    max_iter : int, default=100
-        Maximum number of Newton-Raphson iterations.
-    tol : float, default=1e-6
-        Convergence tolerance on the maximum absolute parameter update.
-    max_step : float, default=5.0
-        Maximum allowed absolute step size per parameter in a single iteration.
+        Whether to apply Firth's Logistic Regression with Intercept Correction
+        (FLIC, Puhr et al., 2017) so average predicted probabilities match the
+        observed event rate.
+    max_iter : int, default=200
+        Maximum number of Newton-Raphson / Fisher scoring iterations.
+    tol : float, default=1e-7
+        Convergence tolerance on score norm / parameter step.
+    conf_level : float, default=0.95
+        Confidence level for Wald intervals in ``summary_table()``.
     """
 
     def __init__(
         self,
         flic: bool = True,
-        max_iter: int = 100,
-        tol: float = 1e-6,
-        max_step: float = 5.0,
+        max_iter: int = 200,
+        tol: float = 1e-7,
+        conf_level: float = 0.95,
     ) -> None:
         self.flic = flic
         self.max_iter = max_iter
         self.tol = tol
-        self.max_step = max_step
+        self.conf_level = conf_level
 
-    @staticmethod
-    def _penalized_loglik(
-        X_design: np.ndarray,
-        y: np.ndarray,
-        beta: np.ndarray,
-    ) -> tuple[float, np.ndarray, np.ndarray, np.ndarray]:
-        """Compute Firth penalized log-likelihood, probabilities, Fisher info, and hat diag."""
-        eta = X_design @ beta
-        p = special.expit(eta)
-        # Numerically stable log-likelihood: sum(y * eta - log(1 + exp(eta)))
-        ll = float(np.sum(y * eta - np.logaddexp(0.0, eta)))
-
-        w = np.clip(p * (1.0 - p), 1e-12, None)
-        Xw = X_design * np.sqrt(w)[:, None]
-        fisher = Xw.T @ Xw
-
-        # Add tiny jitter only if Fisher matrix is ill-conditioned
-        reg = 0.0
-        sign, logdet = np.linalg.slogdet(fisher)
-        if sign <= 0 or not np.isfinite(logdet):
-            reg = 1e-10
-            fisher = fisher + reg * np.eye(fisher.shape[0])
-            sign, logdet = np.linalg.slogdet(fisher)
-
-        try:
-            fisher_inv = np.linalg.inv(fisher)
-        except np.linalg.LinAlgError:
-            fisher_inv = np.linalg.pinv(fisher)
-
-        # Hat matrix diagonal: h_i = w_i * x_i^T I^{-1} x_i
-        hat_diag = np.sum((Xw @ fisher_inv) * Xw, axis=1)
-        penalized_ll = ll + 0.5 * float(logdet)
-        return penalized_ll, p, fisher_inv, hat_diag
-
-    @staticmethod
-    def _flic_intercept(offset: np.ndarray, y: np.ndarray, init_b0: float) -> float:
-        """Solve sum(sigmoid(b0 + offset)) = sum(y) for calibration-in-the-large."""
-        target_sum = float(np.sum(y))
-
-        def score(b0: float) -> float:
-            return float(np.sum(special.expit(b0 + offset)) - target_sum)
-
-        low, high = init_b0 - 2.0, init_b0 + 2.0
-        for _ in range(30):
-            if score(low) <= 0.0 <= score(high):
-                break
-            low -= 5.0
-            high += 5.0
-
-        return float(optimize.brentq(score, low, high, xtol=1e-10, maxiter=200))
-
-    def _prepare_X(self, X: pd.DataFrame | np.ndarray, fit: bool = False) -> np.ndarray:
+    def _validate_inputs(
+        self,
+        X: pd.DataFrame | np.ndarray,
+        y: pd.Series | np.ndarray | None = None,
+        sample_weight: np.ndarray | pd.Series | None = None,
+        reset: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
         if isinstance(X, pd.DataFrame):
-            if fit:
+            if reset:
                 self.feature_names_in_ = np.asarray(X.columns, dtype=object)
-            arr = X.to_numpy(dtype=float)
+            X_arr = X.to_numpy(dtype=float)
         else:
-            arr = np.asarray(X, dtype=float)
+            X_arr = np.asarray(X, dtype=float)
+            if reset and hasattr(self, "feature_names_in_"):
+                delattr(self, "feature_names_in_")
 
-        if arr.ndim == 1:
-            arr = arr.reshape(-1, 1)
-        if arr.ndim != 2:
-            raise ValueError(f"Expected 2D array for X, got {arr.ndim}D.")
-        if np.isnan(arr).any():
-            raise ValueError("Input X contains NaN values. Impute missing values before fitting.")
-        return arr
+        if X_arr.ndim != 2:
+            raise ValueError(f"Expected 2D array for X, got {X_arr.ndim}D array instead.")
+        if X_arr.shape[0] == 0 or X_arr.shape[1] == 0:
+            raise ValueError("X must be non-empty with at least one feature.")
+        if not np.all(np.isfinite(X_arr)):
+            raise ValueError("X contains NaN or infinite values.")
 
-    def fit(self, X: pd.DataFrame | np.ndarray, y: pd.Series | np.ndarray) -> FirthLogisticRegression:
-        """Fit Firth (or FLIC) logistic regression model."""
-        X_arr = self._prepare_X(X, fit=True)
-        y_arr = np.asarray(y)
+        if reset:
+            self.n_features_in_ = int(X_arr.shape[1])
+        elif hasattr(self, "n_features_in_") and X_arr.shape[1] != self.n_features_in_:
+            raise ValueError(
+                f"X has {X_arr.shape[1]} features, but model was fitted with {self.n_features_in_} features."
+            )
 
-        if y_arr.ndim != 1:
-            y_arr = y_arr.ravel()
-        if len(y_arr) != X_arr.shape[0]:
-            raise ValueError("X and y must have the same number of observations.")
+        if y is None:
+            return X_arr, None, None
 
-        classes = np.unique(y_arr)
-        if len(classes) != 2:
-            raise ValueError(f"Target y must have exactly 2 classes; found {len(classes)}.")
+        y_arr = np.asarray(y).ravel()
+        if y_arr.shape[0] != X_arr.shape[0]:
+            raise ValueError("X and y must have the same number of samples.")
+        if np.any(pd.isna(y_arr)):
+            raise ValueError("y contains NaN values.")
 
-        self.classes_ = classes
-        y_bin = (y_arr == classes[1]).astype(float)
-        n_obs, n_features = X_arr.shape
-        self.n_features_in_ = n_features
+        unique_vals = np.unique(y_arr)
+        if len(unique_vals) != 2:
+            raise ValueError(f"Target y must contain exactly 2 classes, got {len(unique_vals)}.")
 
-        # Design matrix with intercept in column 0
-        X_design = np.column_stack([np.ones(n_obs, dtype=float), X_arr])
-        beta = np.zeros(n_features + 1, dtype=float)
-        # Initialize intercept at log-odds of event rate
-        p_bar = np.clip(np.mean(y_bin), 1e-6, 1.0 - 1e-6)
-        beta[0] = float(np.log(p_bar / (1.0 - p_bar)))
+        if set(unique_vals).issubset({0, 1, 0.0, 1.0}):
+            y_bin = y_arr.astype(float)
+            self.classes_ = np.array([0, 1], dtype=int)
+        else:
+            self.classes_ = unique_vals
+            y_bin = (y_arr == self.classes_[1]).astype(float)
 
-        converged = False
-        n_iter = 0
-        current_ll, p, fisher_inv, hat_diag = self._penalized_loglik(X_design, y_bin, beta)
+        w_arr: np.ndarray | None = None
+        if sample_weight is not None:
+            w_arr = np.asarray(sample_weight, dtype=float).ravel()
+            if w_arr.shape[0] != X_arr.shape[0]:
+                raise ValueError("sample_weight must have the same length as y.")
+            if not np.all(np.isfinite(w_arr)) or np.any(w_arr < 0.0):
+                raise ValueError("sample_weight must contain non-negative finite values.")
+            if float(np.sum(w_arr)) <= 0.0:
+                raise ValueError("Sum of sample_weight must be positive.")
 
-        for it in range(1, self.max_iter + 1):
-            n_iter = it
-            # Modified Firth score vector
-            score = X_design.T @ (y_bin - p + hat_diag * (0.5 - p))
-            step = fisher_inv @ score
+        return X_arr, y_bin, w_arr
 
-            max_abs_step = float(np.max(np.abs(step)))
-            if max_abs_step > self.max_step:
-                step = step * (self.max_step / max_abs_step)
+    def fit(
+        self,
+        X: pd.DataFrame | np.ndarray,
+        y: pd.Series | np.ndarray,
+        sample_weight: np.ndarray | pd.Series | None = None,
+    ) -> "FirthLogisticRegression":
+        """Fit Firth penalized logistic regression model."""
+        if not (0.0 < self.conf_level < 1.0):
+            raise ValueError("conf_level must be strictly between 0 and 1.")
 
-            # Step-halving line search to guarantee ascent on penalized log-likelihood
-            alpha = 1.0
-            accepted = False
-            for _ in range(25):
-                beta_cand = beta + alpha * step
-                cand_ll, p_cand, fisher_inv_cand, hat_cand = self._penalized_loglik(
-                    X_design, y_bin, beta_cand
-                )
-                if np.isfinite(cand_ll) and cand_ll >= current_ll - 1e-10:
-                    accepted = True
-                    break
-                alpha *= 0.5
+        X_arr, y_bin, w_arr = self._validate_inputs(
+            X, y, sample_weight=sample_weight, reset=True
+        )
+        assert y_bin is not None
+        weights = np.ones(X_arr.shape[0], dtype=float) if w_arr is None else w_arr
 
-            if not accepted:
-                beta_cand = beta + alpha * step
-                cand_ll, p_cand, fisher_inv_cand, hat_cand = self._penalized_loglik(
-                    X_design, y_bin, beta_cand
-                )
+        fit_res = _fit_firth_mle(
+            X_arr,
+            y_bin,
+            sample_weight=weights,
+            max_iter=self.max_iter,
+            tol=self.tol,
+        )
 
-            delta = float(np.max(np.abs(beta_cand - beta)))
-            beta = beta_cand
-            current_ll = cand_ll
-            p = p_cand
-            fisher_inv = fisher_inv_cand
-            hat_diag = hat_cand
-
-            if delta < self.tol:
-                converged = True
-                break
-
-        self.firth_intercept_ = float(beta[0])
-        slopes = beta[1:].copy()
-
+        intercept = fit_res.intercept
         if self.flic:
-            offset = X_arr @ slopes
-            intercept = self._flic_intercept(offset, y_bin, init_b0=self.firth_intercept_)
-        else:
-            intercept = self.firth_intercept_
+            intercept = _apply_flic_intercept(
+                X_arr, y_bin, fit_res.coef, sample_weight=weights
+            )
 
         self.intercept_ = np.array([intercept], dtype=float)
-        self.coef_ = slopes.reshape(1, -1)
-        self.cov_ = fisher_inv
-        self.se_ = np.sqrt(np.clip(np.diag(fisher_inv), 0.0, None))
-        self.loglik_penalized_ = float(current_ll)
-        self.n_iter_ = n_iter
-        self.converged_ = converged
+        self.coef_ = fit_res.coef.reshape(1, -1)
+        self.cov_params_ = fit_res.cov_params
+        self.converged_ = fit_res.converged
+        self.n_iter_ = fit_res.n_iter
         return self
 
+    def _check_is_fitted(self) -> None:
+        if not hasattr(self, "coef_") or not hasattr(self, "intercept_"):
+            raise ValueError("This FirthLogisticRegression instance is not fitted yet.")
+
     def decision_function(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
-        """Compute linear predictor (log-odds) for samples in X."""
-        if not hasattr(self, "coef_"):
-            raise ValueError("Model is not fitted yet. Call 'fit' first.")
-        X_arr = self._prepare_X(X, fit=False)
-        return self.intercept_[0] + X_arr @ self.coef_.ravel()
+        """Compute log-odds (linear predictor) for samples in X."""
+        self._check_is_fitted()
+        X_arr, _, _ = self._validate_inputs(X, y=None, reset=False)
+        return (X_arr @ self.coef_.ravel() + self.intercept_[0]).ravel()
 
     def predict_proba(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
-        """Predict class probabilities [P(y=0), P(y=1)]."""
-        eta = self.decision_function(X)
-        p1 = special.expit(eta)
-        return np.column_stack([1.0 - p1, p1])
+        """Predict class probabilities of shape (n_samples, 2)."""
+        scores = self.decision_function(X)
+        prob_pos = _sigmoid(scores)
+        return np.column_stack([1.0 - prob_pos, prob_pos])
 
-    def predict(self, X: pd.DataFrame | np.ndarray, threshold: float = 0.5) -> np.ndarray:
-        """Predict binary class labels using the specified probability threshold."""
-        p1 = self.predict_proba(X)[:, 1]
-        return np.where(p1 >= threshold, self.classes_[1], self.classes_[0])
+    def predict(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
+        """Predict binary class labels for samples in X."""
+        probs = self.predict_proba(X)[:, 1]
+        indices = (probs >= 0.5).astype(int)
+        return self.classes_[indices]
 
-    def summary_table(
-        self,
-        feature_names: list[str] | None = None,
-        alpha: float = 0.05,
-    ) -> pd.DataFrame:
-        """Return a coefficient summary table with Odds Ratios and Wald CIs."""
-        if not hasattr(self, "coef_"):
-            raise ValueError("Model is not fitted yet. Call 'fit' first.")
+    def summary_table(self) -> pd.DataFrame:
+        """Return a statistical summary table with coefficients, SEs, ORs, CIs, z, and p-values."""
+        self._check_is_fitted()
 
-        if feature_names is not None:
-            names = ["(Intercept)"] + list(feature_names)
-        elif hasattr(self, "feature_names_in_"):
-            names = ["(Intercept)"] + [str(c) for c in self.feature_names_in_]
+        if hasattr(self, "feature_names_in_"):
+            feat_names = [str(c) for c in self.feature_names_in_]
         else:
-            names = ["(Intercept)"] + [f"x{i}" for i in range(self.n_features_in_)]
+            feat_names = [f"x{i}" for i in range(self.coef_.shape[1])]
 
-        params = np.concatenate([self.intercept_, self.coef_.ravel()])
-        se = self.se_
-        z_crit = float(stats.norm.ppf(1.0 - alpha / 2.0))
-        z_stat = np.divide(params, se, out=np.zeros_like(params), where=se > 0)
-        p_val = 2.0 * stats.norm.sf(np.abs(z_stat))
+        terms = ["(Intercept)"] + feat_names
+        estimates = np.concatenate([self.intercept_, self.coef_.ravel()])
+        se = np.sqrt(np.clip(np.diag(self.cov_params_), 0.0, None))
 
-        ci_low = params - z_crit * se
-        ci_high = params + z_crit * se
+        z_stats = np.divide(
+            estimates,
+            se,
+            out=np.full_like(estimates, np.nan),
+            where=se > 0,
+        )
+        p_values = 2.0 * (1.0 - stats.norm.cdf(np.abs(z_stats)))
+
+        z_crit = float(stats.norm.ppf(0.5 + self.conf_level / 2.0))
+        ci_low = estimates - z_crit * se
+        ci_high = estimates + z_crit * se
+
+        odds_ratio = np.exp(estimates)
+        or_ci_low = np.exp(ci_low)
+        or_ci_high = np.exp(ci_high)
 
         return pd.DataFrame(
             {
-                "term": names,
-                "coef": params,
+                "term": terms,
+                "coef": estimates,
                 "se": se,
-                "odds_ratio": np.exp(params),
-                "or_ci_low": np.exp(ci_low),
-                "or_ci_high": np.exp(ci_high),
-                "z_stat": z_stat,
-                "p_value": p_val,
+                "odds_ratio": odds_ratio,
+                "or_ci_low": or_ci_low,
+                "or_ci_high": or_ci_high,
+                "z_stat": z_stats,
+                "p_value": p_values,
             }
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return fitted model metadata and summary rows."""
+        self._check_is_fitted()
+        return {
+            "flic": self.flic,
+            "converged": self.converged_,
+            "n_iter": self.n_iter_,
+            "intercept": float(self.intercept_[0]),
+            "coef": self.coef_.ravel().tolist(),
+            "summary": self.summary_table().to_dict(orient="records"),
+        }
