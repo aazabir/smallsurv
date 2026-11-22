@@ -215,7 +215,12 @@ class FirthLogisticRegression(BaseEstimator, ClassifierMixin):
 
     With ``flic=True`` the slope coefficients are identical to the Firth fit and only
     the intercept changes. The standard errors, including those of the slopes, are
-    computed at the corrected model, so they differ slightly from ``flic=False``.
+    computed at the corrected model, so they differ slightly from ``flic=False``. This
+    matches the ``var`` matrix returned by ``flic()`` in ``logistf``, the inverse of
+    ``X^T W X`` with weights from the corrected probabilities. The intervals and
+    p-values that ``logistf`` prints for FLIC are not identical to the Wald values
+    here. It uses the standard error of an intercept-only refit for the intercept, and
+    carries the slope intervals and p-values over from the Firth fit.
 
     ``sample_weight`` is treated as a frequency weight. Integer weights give the same
     fit as repeating each row that many times. The reported standard errors do not
