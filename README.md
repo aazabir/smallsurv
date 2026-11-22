@@ -77,6 +77,14 @@ pytest
 python examples/demo.py
 ```
 
+## Citation
+
+If you use smallsurv, please cite the archived release.
+
+Al Zabir, A., & Yaseen, M. (2026). smallsurv (Version v0.2.1) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.24442639
+
+Citation metadata is also available in `CITATION.cff`.
+
 ## License
 
 MIT License. See `LICENSE` for details.
