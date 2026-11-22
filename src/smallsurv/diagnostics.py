@@ -206,7 +206,7 @@ def audit_data(
     else:
         y = (y_raw == unique_vals[1]).astype(int)
 
-    n_obs = int(len(data))
+    n_obs = len(data)
     n_events = int(y.sum())
     n_non_events = n_obs - n_events
     minority_events = min(n_events, n_non_events)

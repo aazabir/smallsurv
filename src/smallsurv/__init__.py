@@ -14,14 +14,14 @@ from smallsurv.validation import (
     repeated_cv_validate,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.1"
 __all__ = [
-    "__version__",
     "CalibrationReport",
     "DiagnosticReport",
     "FirthLogisticRegression",
     "SimulationResult",
     "ValidationReport",
+    "__version__",
     "audit_data",
     "bootstrap_optimism_validate",
     "evaluate_calibration",

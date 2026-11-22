@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,11 +10,35 @@ import numpy as np
 import pandas as pd
 from scipy import optimize, special, stats
 from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.exceptions import ConvergenceWarning
 
 
 def _sigmoid(z: np.ndarray) -> np.ndarray:
     """Numerically stable logistic sigmoid function."""
     return special.expit(np.clip(z, -500.0, 500.0))
+
+
+def _covariance_from_information(
+    X: np.ndarray,
+    intercept: float,
+    coef: np.ndarray,
+    sample_weight: np.ndarray,
+) -> np.ndarray:
+    """Covariance matrix as the inverse weighted Fisher information at given parameters.
+
+    The information ``X^T W X`` is evaluated at the supplied intercept and slopes, so
+    it describes the fitted model that is actually reported. For FLIC this means the
+    corrected intercept, not the intercept of the underlying Firth fit.
+    """
+    design = np.column_stack([np.ones(X.shape[0], dtype=float), X])
+    beta = np.concatenate([[intercept], np.asarray(coef, dtype=float).ravel()])
+    pi = _sigmoid(np.clip(design @ beta, -50.0, 50.0))
+    wt = np.clip(np.asarray(sample_weight, dtype=float).ravel() * pi * (1.0 - pi), 1e-12, None)
+    fisher = design.T @ (design * wt[:, None]) + 1e-10 * np.eye(design.shape[1])
+    try:
+        return np.linalg.inv(fisher)
+    except np.linalg.LinAlgError:
+        return np.linalg.pinv(fisher)
 
 
 @dataclass
@@ -44,7 +69,19 @@ def _fit_firth_mle(
     n_params = n_features + 1
     w = np.asarray(sample_weight, dtype=float).ravel()
 
-    # Mild ridge initialization helps in extreme separation before Jeffreys penalty stabilizes
+    def pen_loglik(b_vec: np.ndarray) -> float:
+        """Weighted Firth penalized log-likelihood at ``b_vec``."""
+        e = np.clip(design @ b_vec, -50.0, 50.0)
+        p = _sigmoid(e)
+        log_p = np.log(np.clip(p, 1e-15, 1.0))
+        log_q = np.log(np.clip(1.0 - p, 1e-15, 1.0))
+        ll = float(np.sum(w * (y * log_p + (1.0 - y) * log_q)))
+        w_p = np.clip(w * p * (1.0 - p), 1e-12, None)
+        info = design.T @ (design * w_p[:, None]) + 1e-10 * np.eye(n_params)
+        sign, logdet = np.linalg.slogdet(info)
+        penalty = 0.5 * float(logdet) if sign > 0 else -1e6
+        return ll + penalty
+
     beta = np.zeros(n_params, dtype=float)
     converged = False
     n_iter = 0
@@ -81,16 +118,6 @@ def _fit_firth_mle(
             delta, _, _, _ = np.linalg.lstsq(fisher, score, rcond=None)
 
         # Step-halving line search on penalized log-likelihood
-        def pen_loglik(b_vec: np.ndarray) -> float:
-            e = np.clip(design @ b_vec, -50.0, 50.0)
-            p = _sigmoid(e)
-            ll = float(np.sum(w * (y * np.log(np.clip(p, 1e-15, 1.0)) + (1.0 - y) * np.log(np.clip(1.0 - p, 1e-15, 1.0)))))
-            w_p = np.clip(w * p * (1.0 - p), 1e-12, None)
-            info = design.T @ (design * w_p[:, None]) + 1e-10 * np.eye(n_params)
-            sign, logdet = np.linalg.slogdet(info)
-            penalty = 0.5 * float(logdet) if sign > 0 else -1e6
-            return ll + penalty
-
         curr_obj = pen_loglik(beta)
         step = 1.0
         accepted = False
@@ -106,26 +133,23 @@ def _fit_firth_mle(
             step *= 0.5
 
         if not accepted:
-            beta = beta + 0.1 * delta
+            # No step improved the penalized likelihood. Report this honestly instead of
+            # taking a blind step or declaring convergence.
+            break
 
-        if float(np.linalg.norm(step * delta)) < tol:
+        # Parameter change is only a convergence signal for a full, undamped step. A
+        # tiny change after repeated halving says nothing about the score.
+        if step == 1.0 and float(np.max(np.abs(delta))) < tol:
             converged = True
             break
 
-    eta_final = np.clip(design @ beta, -50.0, 50.0)
-    pi_final = _sigmoid(eta_final)
-    wt_final = np.clip(w * pi_final * (1.0 - pi_final), 1e-12, None)
-    fisher_final = design.T @ (design * wt_final[:, None]) + 1e-10 * np.eye(n_params)
-    try:
-        cov_params = np.linalg.inv(fisher_final)
-    except np.linalg.LinAlgError:
-        cov_params = np.linalg.pinv(fisher_final)
+    cov_params = _covariance_from_information(X, float(beta[0]), beta[1:], w)
 
     return _FirthFitResult(
         intercept=float(beta[0]),
         coef=beta[1:].copy(),
         cov_params=cov_params,
-        converged=converged or n_iter < max_iter,
+        converged=converged,
         n_iter=n_iter,
     )
 
@@ -186,6 +210,29 @@ class FirthLogisticRegression(BaseEstimator, ClassifierMixin):
         Convergence tolerance on score norm / parameter step.
     conf_level : float, default=0.95
         Confidence level for Wald intervals in ``summary_table()``.
+
+    Notes
+    -----
+    Inference in ``summary_table()`` is Wald based. Standard errors are the square
+    roots of the diagonal of the inverse weighted Fisher information evaluated at the
+    reported parameters, and confidence intervals and p-values use the normal
+    approximation. Other Firth implementations, such as ``logistf`` in R, report
+    profile penalized likelihood intervals and penalized likelihood ratio tests by
+    default. These can differ from Wald intervals, especially for rare events and
+    near separation, where Wald intervals are less reliable.
+
+    With ``flic=True`` the slope coefficients are identical to the Firth fit and only
+    the intercept changes. The standard errors, including those of the slopes, are
+    computed at the corrected model, so they differ slightly from ``flic=False``. This
+    matches the ``var`` matrix returned by ``flic()`` in ``logistf``, the inverse of
+    ``X^T W X`` with weights from the corrected probabilities. The intervals and
+    p-values that ``logistf`` prints for FLIC are not identical to the Wald values
+    here. It uses the standard error of an intercept-only refit for the intercept, and
+    carries the slope intervals and p-values over from the Firth fit.
+
+    ``sample_weight`` is treated as a frequency weight. Integer weights give the same
+    fit as repeating each row that many times. The reported standard errors do not
+    account for survey design features such as clustering or stratification.
     """
 
     def __init__(
@@ -243,7 +290,7 @@ class FirthLogisticRegression(BaseEstimator, ClassifierMixin):
         if len(unique_vals) != 2:
             raise ValueError(f"Target y must contain exactly 2 classes, got {len(unique_vals)}.")
 
-        if set(unique_vals).issubset({0, 1, 0.0, 1.0}):
+        if set(unique_vals).issubset({0, 1}):
             y_bin = y_arr.astype(float)
             self.classes_ = np.array([0, 1], dtype=int)
         else:
@@ -267,7 +314,7 @@ class FirthLogisticRegression(BaseEstimator, ClassifierMixin):
         X: pd.DataFrame | np.ndarray,
         y: pd.Series | np.ndarray,
         sample_weight: np.ndarray | pd.Series | None = None,
-    ) -> "FirthLogisticRegression":
+    ) -> FirthLogisticRegression:
         """Fit Firth penalized logistic regression model."""
         if not (0.0 < self.conf_level < 1.0):
             raise ValueError("conf_level must be strictly between 0 and 1.")
@@ -286,15 +333,30 @@ class FirthLogisticRegression(BaseEstimator, ClassifierMixin):
             tol=self.tol,
         )
 
+        if not fit_res.converged:
+            warnings.warn(
+                f"Firth fitting did not converge after {fit_res.n_iter} iterations. "
+                "Estimates may be unreliable. Increase max_iter, rescale the predictors "
+                "or check the data with audit_data().",
+                ConvergenceWarning,
+                stacklevel=2,
+            )
+
         intercept = fit_res.intercept
+        cov_params = fit_res.cov_params
         if self.flic:
             intercept = _apply_flic_intercept(
                 X_arr, y_bin, fit_res.coef, sample_weight=weights
             )
+            # The reported model uses the corrected intercept, so the standard errors
+            # must come from the information at that model, not at the Firth fit.
+            cov_params = _covariance_from_information(
+                X_arr, intercept, fit_res.coef, weights
+            )
 
         self.intercept_ = np.array([intercept], dtype=float)
         self.coef_ = fit_res.coef.reshape(1, -1)
-        self.cov_params_ = fit_res.cov_params
+        self.cov_params_ = cov_params
         self.converged_ = fit_res.converged
         self.n_iter_ = fit_res.n_iter
         return self
@@ -322,7 +384,11 @@ class FirthLogisticRegression(BaseEstimator, ClassifierMixin):
         return self.classes_[indices]
 
     def summary_table(self) -> pd.DataFrame:
-        """Return a statistical summary table with coefficients, SEs, ORs, CIs, z, and p-values."""
+        """Return a summary table with coefficients, SEs, ORs, CIs, z, and p-values.
+
+        Confidence intervals and p-values are Wald based (see the class notes), not
+        profile penalized likelihood intervals.
+        """
         self._check_is_fitted()
 
         if hasattr(self, "feature_names_in_"):

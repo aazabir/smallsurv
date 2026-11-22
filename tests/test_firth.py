@@ -107,3 +107,30 @@ def test_firth_validation_errors():
     X_ok = np.array([[1.0], [2.0], [3.0]])
     with pytest.raises(ValueError, match="2 classes"):
         model.fit(X_ok, np.array([0, 1, 2]))
+
+def test_firth_reports_non_convergence_with_warning():
+    from sklearn.exceptions import ConvergenceWarning
+
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(60, 3))
+    y = rng.binomial(1, 1.0 / (1.0 + np.exp(-(X[:, 0] - 0.5))))
+
+    with pytest.warns(ConvergenceWarning, match="did not converge"):
+        model = FirthLogisticRegression(max_iter=1).fit(X, y)
+
+    assert model.converged_ is False
+    assert model.n_iter_ == 1
+
+
+def test_firth_converged_flag_true_without_warning():
+    import warnings
+
+    rng = np.random.default_rng(2)
+    X = rng.normal(size=(80, 2))
+    y = rng.binomial(1, 1.0 / (1.0 + np.exp(-(0.8 * X[:, 0] - 0.4))))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        model = FirthLogisticRegression().fit(X, y)
+
+    assert model.converged_ is True
