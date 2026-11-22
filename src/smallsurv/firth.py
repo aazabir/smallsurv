@@ -65,9 +65,20 @@ def _fit_firth_mle(
     weighted Fisher information matrix.
     """
     n_samples, n_features = X.shape
-    design = np.column_stack([np.ones(n_samples, dtype=float), X])
     n_params = n_features + 1
     w = np.asarray(sample_weight, dtype=float).ravel()
+
+    # Fit on standardized predictors. The Jeffreys penalty is equivariant to linear
+    # reparametrization, so the penalized maximum is the same, but the information
+    # matrix is far better conditioned for unscaled predictors such as age or income.
+    # Estimates are mapped back to the original scale after the iterations.
+    X_raw = X
+    w_total = float(np.sum(w))
+    center = (w[:, None] * X_raw).sum(axis=0) / w_total
+    scale = np.sqrt((w[:, None] * (X_raw - center) ** 2).sum(axis=0) / w_total)
+    scale = np.where(scale > 1e-12, scale, 1.0)
+    X = (X_raw - center) / scale
+    design = np.column_stack([np.ones(n_samples, dtype=float), X])
 
     def pen_loglik(b_vec: np.ndarray) -> float:
         """Weighted Firth penalized log-likelihood at ``b_vec``."""
@@ -82,32 +93,35 @@ def _fit_firth_mle(
         penalty = 0.5 * float(logdet) if sign > 0 else -1e6
         return ll + penalty
 
-    beta = np.zeros(n_params, dtype=float)
-    converged = False
-    n_iter = 0
-
-    for it in range(1, max_iter + 1):
-        n_iter = it
-        eta = np.clip(design @ beta, -50.0, 50.0)
+    def score_and_fisher(b_vec: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Firth modified score and weighted Fisher information at ``b_vec``."""
+        eta = np.clip(design @ b_vec, -50.0, 50.0)
         pi = _sigmoid(eta)
         wt = np.clip(w * pi * (1.0 - pi), 1e-12, None)
 
-        # Weighted Fisher information matrix: X^T W X
-        WX = design * wt[:, None]
-        fisher = design.T @ WX + 1e-10 * np.eye(n_params)
+        # Weighted Fisher information matrix X^T W X
+        fisher = design.T @ (design * wt[:, None]) + 1e-10 * np.eye(n_params)
 
-        # Hat matrix diagonal h_i = w_i * x_i^T I^{-1} x_i
-        # Solve fisher @ V_part = design.T -> h = sum(design * (fisher^{-1} design^T)^T, axis=1) * wt
-        inv_fisher_XT = np.linalg.solve(fisher, design.T)
-        hat_diag = np.sum(design * inv_fisher_XT.T, axis=1) * wt
-        hat_diag = np.clip(hat_diag, 0.0, 0.999999)
+        # Hat matrix diagonal h_i = w_i p_i (1 - p_i) x_i^T I^{-1} x_i. Leverages lie in
+        # [0, 1] and a single-observation category has leverage 1, so cap at 1 only.
+        inv_fisher_xt = np.linalg.solve(fisher, design.T)
+        hat_diag = np.clip(np.sum(design * inv_fisher_xt.T, axis=1) * wt, 0.0, 1.0)
 
-        # Firth modified score: U*(beta)_j = sum_i w_i * (y_i - pi_i + h_i * (0.5 - pi_i)) * x_{ij}
-        adj_resid = w * (y - pi) + hat_diag * (0.5 - pi)
-        score = design.T @ adj_resid
+        # Firth modified score U*(beta)_j = sum_i (w_i (y_i - p_i) + h_i (0.5 - p_i)) x_ij
+        score = design.T @ (w * (y - pi) + hat_diag * (0.5 - pi))
+        return score, fisher
 
-        step_norm = float(np.max(np.abs(score)))
-        if step_norm < tol and it > 1:
+    beta = np.zeros(n_params, dtype=float)
+    converged = False
+    n_iter = 0
+    score_norm = np.inf
+
+    for it in range(1, max_iter + 1):
+        n_iter = it
+        score, fisher = score_and_fisher(beta)
+
+        score_norm = float(np.max(np.abs(score)))
+        if score_norm < tol and it > 1:
             converged = True
             break
 
@@ -137,17 +151,40 @@ def _fit_firth_mle(
             # taking a blind step or declaring convergence.
             break
 
-        # Parameter change is only a convergence signal for a full, undamped step. A
-        # tiny change after repeated halving says nothing about the score.
-        if step == 1.0 and float(np.max(np.abs(delta))) < tol:
+        # A change in the estimates is only a convergence signal for a full, undamped
+        # step, because a tiny change after repeated halving says nothing about the
+        # score. The threshold of max(tol, 1e-6) on standardized coefficients is far
+        # tighter than the 1e-4 used by logistf and firthlogist.
+        if step == 1.0 and float(np.max(np.abs(delta))) < max(tol, 1e-6):
             converged = True
             break
 
-    cov_params = _covariance_from_information(X, float(beta[0]), beta[1:], w)
+    if not converged and score_norm < 1e-3:
+        # Fisher scoring can stall next to the solution. With a one-observation
+        # category the leverage is 1 and the true curvature is twice the Fisher
+        # information, so the update has a factor of -1 and cycles forever. Polish by
+        # solving the modified score equations directly. This only runs when the
+        # iterations ended close to a solution, never to rescue a fit that is far off.
+        polished = optimize.root(
+            lambda b_vec: score_and_fisher(b_vec)[0], beta, method="hybr", tol=1e-12
+        )
+        polished_score = score_and_fisher(polished.x)[0]
+        if (
+            np.all(np.isfinite(polished.x))
+            and float(np.max(np.abs(polished.x))) <= 50.0
+            and float(np.max(np.abs(polished_score))) < 1e-6
+            and pen_loglik(polished.x) >= pen_loglik(beta) - 1e-9
+        ):
+            beta = polished.x
+            converged = True
+
+    coef = beta[1:] / scale
+    intercept = float(beta[0] - np.sum(coef * center))
+    cov_params = _covariance_from_information(X_raw, intercept, coef, w)
 
     return _FirthFitResult(
-        intercept=float(beta[0]),
-        coef=beta[1:].copy(),
+        intercept=intercept,
+        coef=coef.copy(),
         cov_params=cov_params,
         converged=converged,
         n_iter=n_iter,

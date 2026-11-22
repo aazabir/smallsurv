@@ -3,6 +3,22 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### Fixed
+- False `ConvergenceWarning` for fits that had in fact converged. With a category that
+  has a single observation, the leverage is exactly 1 and Fisher scoring cycles between
+  two nearby points forever, so the score tolerance was never met. The fit now stops
+  when the estimates stop moving, and if it stalls close to a solution it is polished
+  by solving the modified score equations directly. The estimates were already correct
+  and match `firthlogist`.
+- Fitting is done on standardized predictors and mapped back to the original scale.
+  The penalized maximum is identical, and convergence no longer depends on whether a
+  predictor is measured in years, thousands or units.
+
+### Added
+- Regression test with a one-observation category taken from the demo bootstrap.
+
 ## [0.2.1] - 2026-11-22
 
 ### Fixed
