@@ -12,10 +12,10 @@ Statistical guardrails, Firth penalized logistic regression with FLIC intercept 
 
 ## Installation
 
-Install `v0.2.0` directly from GitHub:
+Install `v0.2.1` directly from GitHub:
 
 ```bash
-pip install git+https://github.com/aazabir/smallsurv.git@v0.2.0
+pip install git+https://github.com/aazabir/smallsurv.git@v0.2.1
 ```
 
 For local development:
@@ -63,6 +63,12 @@ print(evaluate_calibration(y, probs).summary())
 val = bootstrap_optimism_validate(model, X, y, n_bootstraps=50, random_state=42)
 print(val.summary())
 ```
+
+## Inference notes
+
+- Standard errors, confidence intervals and p-values in `summary_table()` are **Wald based**. Other Firth implementations, such as `logistf` in R, report profile penalized likelihood intervals and penalized likelihood ratio tests by default, which can differ for rare events and near separation.
+- With `flic=True` the slope coefficients equal the Firth fit and only the intercept is corrected. Standard errors are computed at the corrected model.
+- `sample_weight` is a **frequency weight**. Integer weights give the same fit as repeating rows. Standard errors do not account for clustering or stratification, so they are not design-based survey estimates.
 
 ## Running Tests & Demo
 
