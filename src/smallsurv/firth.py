@@ -16,6 +16,29 @@ def _sigmoid(z: np.ndarray) -> np.ndarray:
     return special.expit(np.clip(z, -500.0, 500.0))
 
 
+def _covariance_from_information(
+    X: np.ndarray,
+    intercept: float,
+    coef: np.ndarray,
+    sample_weight: np.ndarray,
+) -> np.ndarray:
+    """Covariance matrix as the inverse weighted Fisher information at given parameters.
+
+    The information ``X^T W X`` is evaluated at the supplied intercept and slopes, so
+    it describes the fitted model that is actually reported. For FLIC this means the
+    corrected intercept, not the intercept of the underlying Firth fit.
+    """
+    design = np.column_stack([np.ones(X.shape[0], dtype=float), X])
+    beta = np.concatenate([[intercept], np.asarray(coef, dtype=float).ravel()])
+    pi = _sigmoid(np.clip(design @ beta, -50.0, 50.0))
+    wt = np.clip(np.asarray(sample_weight, dtype=float).ravel() * pi * (1.0 - pi), 1e-12, None)
+    fisher = design.T @ (design * wt[:, None]) + 1e-10 * np.eye(design.shape[1])
+    try:
+        return np.linalg.inv(fisher)
+    except np.linalg.LinAlgError:
+        return np.linalg.pinv(fisher)
+
+
 @dataclass
 class _FirthFitResult:
     intercept: float
@@ -112,14 +135,7 @@ def _fit_firth_mle(
             converged = True
             break
 
-    eta_final = np.clip(design @ beta, -50.0, 50.0)
-    pi_final = _sigmoid(eta_final)
-    wt_final = np.clip(w * pi_final * (1.0 - pi_final), 1e-12, None)
-    fisher_final = design.T @ (design * wt_final[:, None]) + 1e-10 * np.eye(n_params)
-    try:
-        cov_params = np.linalg.inv(fisher_final)
-    except np.linalg.LinAlgError:
-        cov_params = np.linalg.pinv(fisher_final)
+    cov_params = _covariance_from_information(X, float(beta[0]), beta[1:], w)
 
     return _FirthFitResult(
         intercept=float(beta[0]),
@@ -186,6 +202,24 @@ class FirthLogisticRegression(BaseEstimator, ClassifierMixin):
         Convergence tolerance on score norm / parameter step.
     conf_level : float, default=0.95
         Confidence level for Wald intervals in ``summary_table()``.
+
+    Notes
+    -----
+    Inference in ``summary_table()`` is Wald based. Standard errors are the square
+    roots of the diagonal of the inverse weighted Fisher information evaluated at the
+    reported parameters, and confidence intervals and p-values use the normal
+    approximation. Other Firth implementations, such as ``logistf`` in R, report
+    profile penalized likelihood intervals and penalized likelihood ratio tests by
+    default. These can differ from Wald intervals, especially for rare events and
+    near separation, where Wald intervals are less reliable.
+
+    With ``flic=True`` the slope coefficients are identical to the Firth fit and only
+    the intercept changes. The standard errors, including those of the slopes, are
+    computed at the corrected model, so they differ slightly from ``flic=False``.
+
+    ``sample_weight`` is treated as a frequency weight. Integer weights give the same
+    fit as repeating each row that many times. The reported standard errors do not
+    account for survey design features such as clustering or stratification.
     """
 
     def __init__(
@@ -287,14 +321,20 @@ class FirthLogisticRegression(BaseEstimator, ClassifierMixin):
         )
 
         intercept = fit_res.intercept
+        cov_params = fit_res.cov_params
         if self.flic:
             intercept = _apply_flic_intercept(
                 X_arr, y_bin, fit_res.coef, sample_weight=weights
             )
+            # The reported model uses the corrected intercept, so the standard errors
+            # must come from the information at that model, not at the Firth fit.
+            cov_params = _covariance_from_information(
+                X_arr, intercept, fit_res.coef, weights
+            )
 
         self.intercept_ = np.array([intercept], dtype=float)
         self.coef_ = fit_res.coef.reshape(1, -1)
-        self.cov_params_ = fit_res.cov_params
+        self.cov_params_ = cov_params
         self.converged_ = fit_res.converged
         self.n_iter_ = fit_res.n_iter
         return self
@@ -322,7 +362,11 @@ class FirthLogisticRegression(BaseEstimator, ClassifierMixin):
         return self.classes_[indices]
 
     def summary_table(self) -> pd.DataFrame:
-        """Return a statistical summary table with coefficients, SEs, ORs, CIs, z, and p-values."""
+        """Return a summary table with coefficients, SEs, ORs, CIs, z, and p-values.
+
+        Confidence intervals and p-values are Wald based (see the class notes), not
+        profile penalized likelihood intervals.
+        """
         self._check_is_fitted()
 
         if hasattr(self, "feature_names_in_"):
