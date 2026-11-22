@@ -16,12 +16,12 @@ from smallsurv.validation import (
 
 __version__ = "0.2.1"
 __all__ = [
-    "__version__",
     "CalibrationReport",
     "DiagnosticReport",
     "FirthLogisticRegression",
     "SimulationResult",
     "ValidationReport",
+    "__version__",
     "audit_data",
     "bootstrap_optimism_validate",
     "evaluate_calibration",

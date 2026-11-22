@@ -1,4 +1,3 @@
-import numpy as np
 import pytest
 
 from smallsurv import SimulationResult, run_monte_carlo

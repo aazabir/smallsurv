@@ -290,7 +290,7 @@ class FirthLogisticRegression(BaseEstimator, ClassifierMixin):
         if len(unique_vals) != 2:
             raise ValueError(f"Target y must contain exactly 2 classes, got {len(unique_vals)}.")
 
-        if set(unique_vals).issubset({0, 1, 0.0, 1.0}):
+        if set(unique_vals).issubset({0, 1}):
             y_bin = y_arr.astype(float)
             self.classes_ = np.array([0, 1], dtype=int)
         else:
@@ -314,7 +314,7 @@ class FirthLogisticRegression(BaseEstimator, ClassifierMixin):
         X: pd.DataFrame | np.ndarray,
         y: pd.Series | np.ndarray,
         sample_weight: np.ndarray | pd.Series | None = None,
-    ) -> "FirthLogisticRegression":
+    ) -> FirthLogisticRegression:
         """Fit Firth penalized logistic regression model."""
         if not (0.0 < self.conf_level < 1.0):
             raise ValueError("conf_level must be strictly between 0 and 1.")

@@ -198,7 +198,7 @@ def evaluate_calibration(
     if np.any((p < 0.0) | (p > 1.0)) or np.isnan(p).any():
         raise ValueError("y_prob must contain finite probabilities in [0, 1].")
 
-    n_obs = int(len(y))
+    n_obs = len(y)
     event_rate = float(np.mean(y))
     mean_pred = float(np.mean(p))
 
