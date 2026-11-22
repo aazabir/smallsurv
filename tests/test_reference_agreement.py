@@ -133,3 +133,20 @@ def test_single_observation_category_converges_without_warning() -> None:
 
     assert model.converged_
     assert model.n_iter_ < 200
+
+
+@pytest.mark.parametrize("max_iter", [6, 7, 8, 9])
+def test_stalled_single_observation_fit_is_polished_to_the_solution(max_iter: int) -> None:
+    """Fisher scoring stalls near the solution when a category has one observation.
+
+    Stopping the iterations early in that state must still return the exact
+    penalized maximum instead of reporting non-convergence.
+    """
+    d = REFERENCE["single_obs_category"]
+    X, y = np.array(d["X"]), np.array(d["y"])
+    full = FirthLogisticRegression(flic=False).fit(X, y)
+    stalled = FirthLogisticRegression(flic=False, max_iter=max_iter).fit(X, y)
+
+    assert stalled.converged_
+    np.testing.assert_allclose(stalled.coef_, full.coef_, atol=1e-6)
+    np.testing.assert_allclose(stalled.intercept_, full.intercept_, atol=1e-6)
