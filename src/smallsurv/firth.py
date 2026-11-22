@@ -159,24 +159,28 @@ def _fit_firth_mle(
             converged = True
             break
 
-    if not converged and score_norm < 1e-3:
+    if not converged and score_norm < 1e-3 * w_total:
         # Fisher scoring can stall next to the solution. With a one-observation
         # category the leverage is 1 and the true curvature is twice the Fisher
         # information, so the update has a factor of -1 and cycles forever. Polish by
         # solving the modified score equations directly. This only runs when the
-        # iterations ended close to a solution, never to rescue a fit that is far off.
-        polished = optimize.root(
-            lambda b_vec: score_and_fisher(b_vec)[0], beta, method="hybr", tol=1e-12
-        )
-        polished_score = score_and_fisher(polished.x)[0]
-        if (
-            np.all(np.isfinite(polished.x))
-            and float(np.max(np.abs(polished.x))) <= 50.0
-            and float(np.max(np.abs(polished_score))) < 1e-6
-            and pen_loglik(polished.x) >= pen_loglik(beta) - 1e-9
-        ):
-            beta = polished.x
-            converged = True
+        # iterations ended close to a solution (score below 1e-3 per observation), and
+        # a polished point is accepted only if it solves the score equations to 1e-6
+        # and does not lower the penalized likelihood.
+        for method in ("hybr", "lm"):
+            polished = optimize.root(
+                lambda b_vec: score_and_fisher(b_vec)[0], beta, method=method, tol=1e-12
+            )
+            polished_score = score_and_fisher(polished.x)[0]
+            if (
+                np.all(np.isfinite(polished.x))
+                and float(np.max(np.abs(polished.x))) <= 50.0
+                and float(np.max(np.abs(polished_score))) < 1e-6
+                and pen_loglik(polished.x) >= pen_loglik(beta) - 1e-9
+            ):
+                beta = polished.x
+                converged = True
+                break
 
     coef = beta[1:] / scale
     intercept = float(beta[0] - np.sum(coef * center))

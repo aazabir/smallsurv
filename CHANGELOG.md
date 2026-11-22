@@ -12,12 +12,18 @@ Keep a Changelog and the project uses semantic versioning.
   when the estimates stop moving, and if it stalls close to a solution it is polished
   by solving the modified score equations directly. The estimates were already correct
   and match `firthlogist`.
+- The polish step now runs whenever the iterations end within 1e-3 score per observation
+  of a solution, and falls back to a second root finder. Before, it required an absolute
+  score below 1e-3, so on some platforms and library versions a bootstrap resample with a
+  one-observation category stalled at a score of about 4e-3 and was reported as not
+  converged although the estimates were already correct.
 - Fitting is done on standardized predictors and mapped back to the original scale.
   The penalized maximum is identical, and convergence no longer depends on whether a
   predictor is measured in years, thousands or units.
 
 ### Added
 - Regression test with a one-observation category taken from the demo bootstrap.
+- Regression test for iterations that stop while stalled next to the solution.
 
 ## [0.2.1] - 2026-11-22
 
