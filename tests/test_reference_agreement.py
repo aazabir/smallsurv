@@ -117,3 +117,19 @@ def test_flic_standard_errors_use_corrected_intercept() -> None:
     assert not np.isclose(
         flic.summary_table()["se"].iloc[0], firth.summary_table()["se"].iloc[0], rtol=1e-4
     )
+
+
+def test_single_observation_category_converges_without_warning() -> None:
+    """A dummy with one observation has leverage 1 and made Fisher scoring cycle."""
+    import warnings
+
+    d = REFERENCE["single_obs_category"]
+    X, y = np.array(d["X"]), np.array(d["y"])
+    assert (X != 0).sum(axis=0).min() == 1
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        model = FirthLogisticRegression(flic=True).fit(X, y)
+
+    assert model.converged_
+    assert model.n_iter_ < 200
