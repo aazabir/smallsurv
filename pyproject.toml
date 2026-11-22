@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smallsurv"
-version = "0.1.0"
+version = "0.2.1"
 description = "Statistical guardrails and diagnostic modeling for small-sample binary survey data."
 readme = "README.md"
 license = { file = "LICENSE" }
