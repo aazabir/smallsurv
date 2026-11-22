@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use smallsurv in your work, please cite it as below."
+title: "smallsurv"
+abstract: >-
+  Statistical guardrails, Firth penalized logistic regression with FLIC intercept
+  correction, calibration diagnostics, internal validation and Monte Carlo utilities
+  for small-sample binary survey data.
+type: software
+version: 0.2.1
+license: MIT
+repository-code: "https://github.com/aazabir/smallsurv"
+url: "https://github.com/aazabir/smallsurv"
+authors:
+  - family-names: "Zabir"
+    given-names: "Abdullah Al"
+    affiliation: "Asian Institute of Technology"
+keywords:
+  - small-sample statistics
+  - Firth logistic regression
+  - FLIC
+  - calibration
+  - internal validation
+  - survey data
