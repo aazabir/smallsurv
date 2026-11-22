@@ -3,7 +3,7 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [0.2.1] - Unreleased
+## [0.2.1] - 2026-11-22
 
 ### Fixed
 - FLIC standard errors. With `flic=True` the intercept is re-estimated, but the
