@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,6 +10,7 @@ import numpy as np
 import pandas as pd
 from scipy import optimize, special, stats
 from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.exceptions import ConvergenceWarning
 
 
 def _sigmoid(z: np.ndarray) -> np.ndarray:
@@ -67,7 +69,19 @@ def _fit_firth_mle(
     n_params = n_features + 1
     w = np.asarray(sample_weight, dtype=float).ravel()
 
-    # Mild ridge initialization helps in extreme separation before Jeffreys penalty stabilizes
+    def pen_loglik(b_vec: np.ndarray) -> float:
+        """Weighted Firth penalized log-likelihood at ``b_vec``."""
+        e = np.clip(design @ b_vec, -50.0, 50.0)
+        p = _sigmoid(e)
+        log_p = np.log(np.clip(p, 1e-15, 1.0))
+        log_q = np.log(np.clip(1.0 - p, 1e-15, 1.0))
+        ll = float(np.sum(w * (y * log_p + (1.0 - y) * log_q)))
+        w_p = np.clip(w * p * (1.0 - p), 1e-12, None)
+        info = design.T @ (design * w_p[:, None]) + 1e-10 * np.eye(n_params)
+        sign, logdet = np.linalg.slogdet(info)
+        penalty = 0.5 * float(logdet) if sign > 0 else -1e6
+        return ll + penalty
+
     beta = np.zeros(n_params, dtype=float)
     converged = False
     n_iter = 0
@@ -104,16 +118,6 @@ def _fit_firth_mle(
             delta, _, _, _ = np.linalg.lstsq(fisher, score, rcond=None)
 
         # Step-halving line search on penalized log-likelihood
-        def pen_loglik(b_vec: np.ndarray) -> float:
-            e = np.clip(design @ b_vec, -50.0, 50.0)
-            p = _sigmoid(e)
-            ll = float(np.sum(w * (y * np.log(np.clip(p, 1e-15, 1.0)) + (1.0 - y) * np.log(np.clip(1.0 - p, 1e-15, 1.0)))))
-            w_p = np.clip(w * p * (1.0 - p), 1e-12, None)
-            info = design.T @ (design * w_p[:, None]) + 1e-10 * np.eye(n_params)
-            sign, logdet = np.linalg.slogdet(info)
-            penalty = 0.5 * float(logdet) if sign > 0 else -1e6
-            return ll + penalty
-
         curr_obj = pen_loglik(beta)
         step = 1.0
         accepted = False
@@ -129,9 +133,13 @@ def _fit_firth_mle(
             step *= 0.5
 
         if not accepted:
-            beta = beta + 0.1 * delta
+            # No step improved the penalized likelihood. Report this honestly instead of
+            # taking a blind step or declaring convergence.
+            break
 
-        if float(np.linalg.norm(step * delta)) < tol:
+        # Parameter change is only a convergence signal for a full, undamped step. A
+        # tiny change after repeated halving says nothing about the score.
+        if step == 1.0 and float(np.max(np.abs(delta))) < tol:
             converged = True
             break
 
@@ -141,7 +149,7 @@ def _fit_firth_mle(
         intercept=float(beta[0]),
         coef=beta[1:].copy(),
         cov_params=cov_params,
-        converged=converged or n_iter < max_iter,
+        converged=converged,
         n_iter=n_iter,
     )
 
@@ -324,6 +332,15 @@ class FirthLogisticRegression(BaseEstimator, ClassifierMixin):
             max_iter=self.max_iter,
             tol=self.tol,
         )
+
+        if not fit_res.converged:
+            warnings.warn(
+                f"Firth fitting did not converge after {fit_res.n_iter} iterations. "
+                "Estimates may be unreliable. Increase max_iter, rescale the predictors "
+                "or check the data with audit_data().",
+                ConvergenceWarning,
+                stacklevel=2,
+            )
 
         intercept = fit_res.intercept
         cov_params = fit_res.cov_params
