@@ -7,13 +7,17 @@ abstract: >-
   for small-sample binary survey data.
 type: software
 version: 0.2.1
+date-released: 2026-11-22
+doi: 10.5281/zenodo.24442639
 license: MIT
 repository-code: "https://github.com/aazabir/smallsurv"
 url: "https://github.com/aazabir/smallsurv"
 authors:
-  - family-names: "Zabir"
-    given-names: "Abdullah Al"
+  - family-names: "Al Zabir"
+    given-names: "Abdullah"
     affiliation: "Asian Institute of Technology"
+  - family-names: "Yaseen"
+    given-names: "Muhammad"
 keywords:
   - small-sample statistics
   - Firth logistic regression
