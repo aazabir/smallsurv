@@ -81,7 +81,7 @@ python examples/demo.py
 
 If you use smallsurv, please cite the archived release.
 
-Al Zabir, A., & Yaseen, M. (2026). smallsurv (Version v0.2.1) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.24442639
+Al Zabir, A., & Yaseen, M. (2026). smallsurv (Version v0.2.2) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.24466318
 
 Citation metadata is also available in `CITATION.cff`.
 

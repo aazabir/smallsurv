@@ -8,6 +8,7 @@ abstract: >-
 type: software
 version: 0.2.2
 date-released: 2026-11-23
+doi: 10.5281/zenodo.24466318
 license: MIT
 repository-code: "https://github.com/aazabir/smallsurv"
 url: "https://github.com/aazabir/smallsurv"
