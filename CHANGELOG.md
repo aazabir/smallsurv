@@ -3,7 +3,7 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [0.2.2] - 2026-11-23
 
 ### Fixed
 - False `ConvergenceWarning` for fits that had in fact converged. With a category that

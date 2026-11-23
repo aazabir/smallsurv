@@ -6,9 +6,8 @@ abstract: >-
   correction, calibration diagnostics, internal validation and Monte Carlo utilities
   for small-sample binary survey data.
 type: software
-version: 0.2.1
-date-released: 2026-11-22
-doi: 10.5281/zenodo.24442639
+version: 0.2.2
+date-released: 2026-11-23
 license: MIT
 repository-code: "https://github.com/aazabir/smallsurv"
 url: "https://github.com/aazabir/smallsurv"
