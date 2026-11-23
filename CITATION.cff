@@ -13,8 +13,8 @@ license: MIT
 repository-code: "https://github.com/aazabir/smallsurv"
 url: "https://github.com/aazabir/smallsurv"
 authors:
-  - family-names: "Al Zabir"
-    given-names: "Abdullah"
+  - family-names: "Zabir"
+    given-names: "Abdullah Al"
     affiliation: "Asian Institute of Technology"
   - family-names: "Yaseen"
     given-names: "Muhammad"
